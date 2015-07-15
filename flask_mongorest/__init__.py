@@ -3,10 +3,13 @@ from flask_mongorest.methods import Create, BulkUpdate, List
 
 
 class MongoRest(object):
-    def __init__(self, app, **kwargs):
+    def __init__(self, app=None, **kwargs):
         self.app = app
         self.url_prefix = kwargs.pop('url_prefix', '')
-        app.register_blueprint(Blueprint(self.url_prefix, __name__, template_folder='templates'))
+        if app:
+            app.register_blueprint(Blueprint(self.url_prefix, __name__, template_folder='templates'))
+        else:
+            self.url_rules = []
 
     def register(self, **kwargs):
         def decorator(klass):
@@ -20,15 +23,37 @@ class MongoRest(object):
             if self.url_prefix:
                 url = '%s%s' % (self.url_prefix, url)
 
-            # Add url rules
+            # Add url rules or store for init_app
             pk_type = kwargs.pop('pk_type', 'string')
             view_func = klass.as_view(name)
             if List in klass.methods:
-                self.app.add_url_rule(url, defaults={'pk': None}, view_func=view_func, methods=[List.method], **kwargs)
+                list_kwa = dict(defaults={'pk': None}, view_func=view_func, methods=[List.method])
+                list_kwa.update(**kwargs)
+                if self.app:
+                    self.app.add_url_rule(url, list_kwa)
+                else:
+                    self.url_rules.append((url, list_kwa))
             if Create in klass.methods or BulkUpdate in klass.methods:
-                self.app.add_url_rule(url, view_func=view_func, methods=[x.method for x in klass.methods if x in (Create, BulkUpdate)], **kwargs)
-            self.app.add_url_rule('%s<%s:%s>/' % (url, pk_type, 'pk'), view_func=view_func, methods=[x.method for x in klass.methods if x not in (List, BulkUpdate)], **kwargs)
+                create_kwa = dict(view_func=view_func, methods=[x.method for x in klass.methods if x in (Create, BulkUpdate)])
+                create_kwa.update(**kwargs)
+                if self.app:
+                    self.app.add_url_rule(url, create_kwa)
+                else:
+                    self.url_rules.append((url, create_kwa))
+
+                kwa = dict(view_func=view_func, methods=[x.method for x in klass.methods if x not in (List, BulkUpdate)])
+                kwa.update(kwargs)
+                url = '%s<%s:%s>/' % (url, pk_type, 'pk')
+            if self.app:
+                self.app.add_url_rule(**kwa)
+            else:
+                self.url_rules.append((url, kwa))
             return klass
 
         return decorator
 
+    def init_app(self, app):
+        self.app = app
+        app.register_blueprint(Blueprint(self.url_prefix, __name__, template_folder='templates'))
+        for url, kwa in self.url_rules:
+            self.app.add_url_rule(url, **kwa)
